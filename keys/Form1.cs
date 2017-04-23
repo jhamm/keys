@@ -1,21 +1,11 @@
-﻿using System;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
-using System.Drawing;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+﻿using System.Drawing;
+using System.Threading;
 using System.Windows.Forms;
-using System.Windows.Media;
 
 namespace keys
 {
-
     using System;
-    using System.Runtime.InteropServices;
 
- 
     public static class MouseHook
     {
         public static event EventHandler MouseAction = delegate { };
@@ -23,10 +13,9 @@ namespace keys
         public static void Start()
         {
             _hookID = SetHook(_proc);
-
-
         }
-        public static void stop()
+
+        public static void Stop()
         {
             UnhookWindowsHookEx(_hookID);
         }
@@ -100,9 +89,8 @@ namespace keys
 
         [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Auto, SetLastError = true)]
         private static extern IntPtr GetModuleHandle(string lpModuleName);
-
-
     }
+
     public partial class Form1 : Form
     {
         [System.Runtime.InteropServices.DllImport("gdi32.dll")]
@@ -132,8 +120,6 @@ namespace keys
 
         public static unsafe bool SetBrightness(short brightness)
         {
-            
-
             if (brightness > 255)
                 brightness = 255;
 
@@ -170,11 +156,8 @@ namespace keys
         {
             InitializeClass();
 
-         
-
             short* gArray = stackalloc short[3 * 256];
             short* idx = gArray;
- 
 
             //For some reason, this always returns false?
             bool retVal = GetDeviceGammaRamp(hdc, gArray);
@@ -185,8 +168,7 @@ namespace keys
             return retVal;
         }
 
-
-        System.Threading.Thread myThread;
+        Thread myThread;
         private void OnApplicationExit(object sender, System.Windows.ExitEventArgs e)
         {
             if (myThread.IsAlive)
@@ -212,34 +194,25 @@ namespace keys
             return Icon.FromHandle(small);
         }
 
-
         public Form1()
         {
             InitializeComponent();
-            this.myThread = new System.Threading.Thread(new System.Threading.ThreadStart(myStartingMethod));
+            this.myThread = new Thread(new ThreadStart(myStartingMethod));
             MouseHook.Start();
             MouseHook.MouseAction += new EventHandler(Event);
             InitializeClass();
             this.WindowState = FormWindowState.Minimized;
             this.Hide();
             this.ShowInTaskbar = false;
-            this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.SizableToolWindow;
+            this.FormBorderStyle = FormBorderStyle.SizableToolWindow;
             this.Visible = false;
-            this.FormClosed += new System.Windows.Forms.FormClosedEventHandler(Form1_FormClosed);
+            this.FormClosed += new FormClosedEventHandler(Form1_FormClosed);
             this.Icon = this.GetExecutableIcon();
             NotifyIcon icon = new NotifyIcon();
             icon.Icon = this.Icon;
-            //this.Controls.Add(icon);
             icon.Visible = true;
-            icon.Click += new System.EventHandler(onNotifyIconClick);
-         
+            icon.Click += (sender, e) => this.Close();
         }
-
-        protected void onNotifyIconClick(object sender, EventArgs e)
-        {
-            this.Close();
-        }
-
 
         protected void Form1_FormClosed(object sender, EventArgs e)
         {
@@ -250,11 +223,10 @@ namespace keys
             SetBrightness(130);
         }
 
-  
         private void myStartingMethod()
         {
             SetBrightness(0);
-            System.Threading.Thread.Sleep(6000);
+            Thread.Sleep(6000);
             SetBrightness(135);
         }
 
@@ -264,14 +236,13 @@ namespace keys
             {
                 myThread.Abort();
             }
-            this.myThread = new System.Threading.Thread(new System.Threading.ThreadStart(myStartingMethod));
-            myThread.Start(); 
+            this.myThread = new Thread(new ThreadStart(myStartingMethod));
+            myThread.Start();
         }
-
 
         private void Form1_Load(object sender, EventArgs e)
         {
-            
+
         }
     }
 }
