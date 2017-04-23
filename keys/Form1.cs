@@ -175,13 +175,14 @@ namespace keys
         }
 
         Thread myThread;
-        private void OnApplicationExit(object sender, System.Windows.ExitEventArgs e)
+        private void OnApplicationExit(object sender, EventArgs e)
         {
             if (myThread.IsAlive)
             {
                 myThread.Abort();
             }
             SetBrightness(130);
+            MouseHook.Stop();
         }
 
         [DllImport("Shell32")]
@@ -201,6 +202,7 @@ namespace keys
         public Form1()
         {
             InitializeComponent();
+            Application.ApplicationExit += (sender, e) => OnApplicationExit(sender, e);
             this.myThread = new Thread(new ThreadStart(myStartingMethod));
             MouseHook.Start();
             MouseHook.MouseAction += new EventHandler(Event);
@@ -225,6 +227,7 @@ namespace keys
                 myThread.Abort();
             }
             SetBrightness(130);
+            MouseHook.Stop();
         }
 
         private void myStartingMethod()
