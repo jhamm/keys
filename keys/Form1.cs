@@ -1,11 +1,11 @@
-﻿using System.Drawing;
+﻿using System;
+using System.Drawing;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
 
 namespace keys
 {
-    using System;
-
     public static class MouseHook
     {
         public static event EventHandler MouseAction = delegate { };
@@ -40,7 +40,7 @@ namespace keys
         {
             if (nCode >= 0 && MouseMessages.WM_LBUTTONDOWN == (MouseMessages)wParam)
             {
-                MSLLHOOKSTRUCT hookStruct = (MSLLHOOKSTRUCT)System.Runtime.InteropServices.Marshal.PtrToStructure(lParam, typeof(MSLLHOOKSTRUCT));
+                MSLLHOOKSTRUCT hookStruct = (MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(MSLLHOOKSTRUCT));
                 MouseAction(null, new EventArgs());
             }
             return CallNextHookEx(_hookID, nCode, wParam, lParam);
@@ -58,14 +58,14 @@ namespace keys
             WM_RBUTTONUP = 0x0205
         }
 
-        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        [StructLayout(LayoutKind.Sequential)]
         private struct POINT
         {
             public int x;
             public int y;
         }
 
-        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        [StructLayout(LayoutKind.Sequential)]
         private struct MSLLHOOKSTRUCT
         {
             public POINT pt;
@@ -75,31 +75,41 @@ namespace keys
             public IntPtr dwExtraInfo;
         }
 
-        [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Auto, SetLastError = true)]
+        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
         private static extern IntPtr SetWindowsHookEx(int idHook,
           LowLevelMouseProc lpfn, IntPtr hMod, uint dwThreadId);
 
-        [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Auto, SetLastError = true)]
-        [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool UnhookWindowsHookEx(IntPtr hhk);
 
-        [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Auto, SetLastError = true)]
-        private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode,
-          IntPtr wParam, IntPtr lParam);
+        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
 
-        [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Auto, SetLastError = true)]
+        [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
         private static extern IntPtr GetModuleHandle(string lpModuleName);
     }
 
     public partial class Form1 : Form
     {
-        [System.Runtime.InteropServices.DllImport("gdi32.dll")]
-        private unsafe static extern bool SetDeviceGammaRamp(Int32 hdc, void* ramp);
-        [System.Runtime.InteropServices.DllImport("gdi32.dll")]
-        private unsafe static extern bool GetDeviceGammaRamp(Int32 hdc, void* ramp);
+        [DllImport("gdi32.dll")]
+        public static extern bool GetDeviceGammaRamp(IntPtr hDC, ref RAMP lpRamp);
+        [DllImport("gdi32.dll")]
+        public static extern bool SetDeviceGammaRamp(IntPtr hDC, ref RAMP lpRamp);
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+        public struct RAMP
+        {
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 256)]
+            public UInt16[] Red;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 256)]
+            public UInt16[] Green;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 256)]
+            public UInt16[] Blue;
+        }
 
         private static bool initialized = false;
-        private static Int32 hdc;
+        private static IntPtr hdc;
 
         private short bri = 125;
 
@@ -113,12 +123,12 @@ namespace keys
             //Get the hardware device context of the screen, we can do
             //this by getting the graphics object of null (IntPtr.Zero)
             //then getting the HDC and converting that to an Int32.
-            hdc = Graphics.FromHwnd(IntPtr.Zero).GetHdc().ToInt32();
+            hdc = Graphics.FromHwnd(IntPtr.Zero).GetHdc();
 
             initialized = true;
         }
 
-        public static unsafe bool SetBrightness(short brightness)
+        public static bool SetBrightness(short brightness)
         {
             if (brightness > 255)
                 brightness = 255;
@@ -126,25 +136,22 @@ namespace keys
             if (brightness < 0)
                 brightness = 0;
 
-            short* gArray = stackalloc short[3 * 256];
-            short* idx = gArray;
-
-            for (int j = 0; j < 3; j++)
+            var ramp = new RAMP
             {
-                for (int i = 0; i < 256; i++)
-                {
-                    int arrayVal = i * (brightness + 128);
+                Red = new ushort[256],
+                Blue = new ushort[256],
+                Green = new ushort[256],
+            };
 
-                    if (arrayVal > 65535)
-                        arrayVal = 65535;
+            for (var i = 0; i < 256; i++)
+            {
+                var arrayVal = Math.Min(i * (brightness + 128), ushort.MaxValue);
 
-                    *idx = (short)arrayVal;
-                    idx++;
-                }
+                ramp.Red[i] = ramp.Blue[i] = ramp.Green[i] = (ushort)arrayVal;
             }
 
             //For some reason, this always returns false?
-            bool retVal = SetDeviceGammaRamp(hdc, gArray);
+            bool retVal = SetDeviceGammaRamp(hdc, ref ramp);
 
             //Memory allocated through stackalloc is automatically free'd
             //by the CLR.
@@ -152,15 +159,14 @@ namespace keys
             return retVal;
         }
 
-        public static unsafe bool GetBrightness()
+        public static bool GetBrightness()
         {
             InitializeClass();
 
-            short* gArray = stackalloc short[3 * 256];
-            short* idx = gArray;
+            var ramp = new RAMP();
 
             //For some reason, this always returns false?
-            bool retVal = GetDeviceGammaRamp(hdc, gArray);
+            bool retVal = GetDeviceGammaRamp(hdc, ref ramp);
 
             //Memory allocated through stackalloc is automatically free'd
             //by the CLR.
@@ -178,7 +184,7 @@ namespace keys
             SetBrightness(130);
         }
 
-        [System.Runtime.InteropServices.DllImport("Shell32")]
+        [DllImport("Shell32")]
         public static extern int ExtractIconEx(
             string sFile,
             int iIndex,
@@ -188,9 +194,7 @@ namespace keys
 
         public Icon GetExecutableIcon()
         {
-            IntPtr large;
-            IntPtr small;
-            ExtractIconEx(Application.ExecutablePath, 0, out large, out small, 1);
+            ExtractIconEx(Application.ExecutablePath, 0, out IntPtr large, out IntPtr small, 1);
             return Icon.FromHandle(small);
         }
 
@@ -236,13 +240,12 @@ namespace keys
             {
                 myThread.Abort();
             }
-            this.myThread = new Thread(new ThreadStart(myStartingMethod));
+            myThread = new Thread(new ThreadStart(myStartingMethod));
             myThread.Start();
         }
 
         private void Form1_Load(object sender, EventArgs e)
         {
-
         }
     }
 }
