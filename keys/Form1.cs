@@ -1,8 +1,11 @@
 ﻿using System;
+using System.Configuration;
 using System.Drawing;
+using System.Reactive.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
+using System.Windows.Threading;
 
 namespace keys
 {
@@ -109,13 +112,15 @@ namespace keys
         }
 
         private static bool initialized = false;
-        private static IntPtr hdc;
+        private IntPtr hdc;
+        private Graphics graphics;
+        private CancellationTokenSource cancellationTokenSource = new CancellationTokenSource();
 
         private short bri = 125;
 
         public short Bri { get => bri; set => SetBrightness(value); }
 
-        private static void InitializeClass()
+        private void InitializeClass()
         {
             if (initialized)
                 return;
@@ -123,12 +128,13 @@ namespace keys
             //Get the hardware device context of the screen, we can do
             //this by getting the graphics object of null (IntPtr.Zero)
             //then getting the HDC and converting that to an Int32.
-            hdc = Graphics.FromHwnd(IntPtr.Zero).GetHdc();
+            graphics = Graphics.FromHwnd(IntPtr.Zero);
+            hdc = graphics.GetHdc();
 
             initialized = true;
         }
 
-        public static bool SetBrightness(short brightness)
+        public void SetBrightness(short brightness)
         {
             if (brightness > 255)
                 brightness = 255;
@@ -155,11 +161,9 @@ namespace keys
 
             //Memory allocated through stackalloc is automatically free'd
             //by the CLR.
-
-            return retVal;
         }
 
-        public static bool GetBrightness()
+        public bool GetBrightness()
         {
             InitializeClass();
 
@@ -174,38 +178,10 @@ namespace keys
             return retVal;
         }
 
-        Thread myThread;
-        private void OnApplicationExit(object sender, EventArgs e)
-        {
-            if (myThread.IsAlive)
-            {
-                myThread.Abort();
-            }
-            SetBrightness(130);
-            MouseHook.Stop();
-        }
-
-        [DllImport("Shell32")]
-        public static extern int ExtractIconEx(
-            string sFile,
-            int iIndex,
-            out IntPtr piLargeVersion,
-            out IntPtr piSmallVersion,
-            int amountIcons);
-
-        public Icon GetExecutableIcon()
-        {
-            ExtractIconEx(Application.ExecutablePath, 0, out IntPtr large, out IntPtr small, 1);
-            return Icon.FromHandle(small);
-        }
-
         public Form1()
         {
             InitializeComponent();
-            Application.ApplicationExit += (sender, e) => OnApplicationExit(sender, e);
-            this.myThread = new Thread(new ThreadStart(myStartingMethod));
-            MouseHook.Start();
-            MouseHook.MouseAction += new EventHandler(Event);
+            Application.ApplicationExit += (sender, e) => Form1_FormClosed(sender, e);
             InitializeClass();
             this.WindowState = FormWindowState.Minimized;
             this.Hide();
@@ -213,42 +189,79 @@ namespace keys
             this.FormBorderStyle = FormBorderStyle.SizableToolWindow;
             this.Visible = false;
             this.FormClosed += new FormClosedEventHandler(Form1_FormClosed);
-            this.Icon = this.GetExecutableIcon();
-            NotifyIcon icon = new NotifyIcon();
-            icon.Icon = this.Icon;
-            icon.Visible = true;
+            this.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+            var icon = new NotifyIcon
+            {
+                Icon = this.Icon,
+                Visible = true,
+            };
             icon.Click += (sender, e) => this.Close();
         }
 
         protected void Form1_FormClosed(object sender, EventArgs e)
         {
-            if (myThread.IsAlive)
-            {
-                myThread.Abort();
-            }
+            // abort the rx sequence
+            cancellationTokenSource.Cancel();
             SetBrightness(130);
             MouseHook.Stop();
         }
 
-        private void myStartingMethod()
-        {
-            SetBrightness(0);
-            Thread.Sleep(6000);
-            SetBrightness(135);
-        }
-
-        private void Event(object sender, EventArgs e) {
-            Console.WriteLine("Left mouse click!");
-            if (myThread.IsAlive)
-            {
-                myThread.Abort();
-            }
-            myThread = new Thread(new ThreadStart(myStartingMethod));
-            myThread.Start();
-        }
-
         private void Form1_Load(object sender, EventArgs e)
         {
+            MouseHook.Start();
+            var obs = Observable.FromEventPattern(
+                addHandler: h => MouseHook.MouseAction += h,
+                removeHandler: h => MouseHook.MouseAction -= h)
+                .SubscribeOn(Dispatcher.CurrentDispatcher);
+
+            short brightness = 0;
+            var rampUp = Observable.Interval(TimeSpan.FromSeconds(GetSetting("rampUpInterval", .06)))
+                .Select(x =>
+                {
+                    brightness += 10;
+                    SetBrightness(brightness);
+                    return brightness;
+                })
+                .TakeWhile(x => x < 131);
+
+            var solid = Observable.Interval(TimeSpan.FromSeconds(GetSetting("solidInterval", 6)))
+                .Do(x => SetBrightness(130))
+                .Take(1);
+
+            var token = cancellationTokenSource.Token;
+            var mode = ConfigurationManager.AppSettings["mode"] ?? "solid";
+
+            IDisposable onsubscribe()
+            {
+                switch (mode.ToLower())
+                {
+                    case "rampup":
+                        brightness = 0;
+                        rampUp.Subscribe(token);
+                        return null;
+                    case "solid":
+                    default:
+                        SetBrightness(0);
+                        return solid.Subscribe();
+                }
+            }
+
+            // Dispose the old mode observable if one exists. Solid mode has odd behavior if we don't do this.
+            IDisposable sub = null;
+            obs.Subscribe(
+                onNext =>
+                {
+                    sub?.Dispose();
+                    Console.WriteLine("Left mouse click!");
+                    sub = onsubscribe();
+                }, token);
+        }
+
+        private double GetSetting(string name, double @default)
+        {
+            if (double.TryParse(ConfigurationManager.AppSettings[name], out var res))
+                return res;
+            return @default;
         }
     }
 }
