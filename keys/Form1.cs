@@ -1,6 +1,9 @@
-﻿using System;
+﻿using Gma.System.MouseKeyHook;
+using System;
 using System.Configuration;
 using System.Drawing;
+using System.Reactive;
+using System.Reactive.Disposables;
 using System.Reactive.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -9,90 +12,6 @@ using System.Windows.Threading;
 
 namespace keys
 {
-    public static class MouseHook
-    {
-        public static event EventHandler MouseAction = delegate { };
-
-        public static void Start()
-        {
-            _hookID = SetHook(_proc);
-        }
-
-        public static void Stop()
-        {
-            UnhookWindowsHookEx(_hookID);
-        }
-
-        private static LowLevelMouseProc _proc = HookCallback;
-        private static IntPtr _hookID = IntPtr.Zero;
-
-        private static IntPtr SetHook(LowLevelMouseProc proc)
-        {
-            using (System.Diagnostics.Process curProcess = System.Diagnostics.Process.GetCurrentProcess())
-            using (System.Diagnostics.ProcessModule curModule = curProcess.MainModule)
-            {
-                return SetWindowsHookEx(WH_MOUSE_LL, proc,
-                  GetModuleHandle(curModule.ModuleName), 0);
-            }
-        }
-
-        private delegate IntPtr LowLevelMouseProc(int nCode, IntPtr wParam, IntPtr lParam);
-
-        private static IntPtr HookCallback(
-          int nCode, IntPtr wParam, IntPtr lParam)
-        {
-            if (nCode >= 0 && MouseMessages.WM_LBUTTONDOWN == (MouseMessages)wParam)
-            {
-                MSLLHOOKSTRUCT hookStruct = (MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(MSLLHOOKSTRUCT));
-                MouseAction(null, new EventArgs());
-            }
-            return CallNextHookEx(_hookID, nCode, wParam, lParam);
-        }
-
-        private const int WH_MOUSE_LL = 14;
-
-        private enum MouseMessages
-        {
-            WM_LBUTTONDOWN = 0x0201,
-            WM_LBUTTONUP = 0x0202,
-            WM_MOUSEMOVE = 0x0200,
-            WM_MOUSEWHEEL = 0x020A,
-            WM_RBUTTONDOWN = 0x0204,
-            WM_RBUTTONUP = 0x0205
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct POINT
-        {
-            public int x;
-            public int y;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct MSLLHOOKSTRUCT
-        {
-            public POINT pt;
-            public uint mouseData;
-            public uint flags;
-            public uint time;
-            public IntPtr dwExtraInfo;
-        }
-
-        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-        private static extern IntPtr SetWindowsHookEx(int idHook,
-          LowLevelMouseProc lpfn, IntPtr hMod, uint dwThreadId);
-
-        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        private static extern bool UnhookWindowsHookEx(IntPtr hhk);
-
-        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-        private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
-
-        [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-        private static extern IntPtr GetModuleHandle(string lpModuleName);
-    }
-
     public partial class Form1 : Form
     {
         [DllImport("gdi32.dll")]
@@ -111,10 +30,12 @@ namespace keys
             public UInt16[] Blue;
         }
 
-        private static bool initialized = false;
+        private IKeyboardMouseEvents GlobalHook;
+        private bool initialized = false;
         private IntPtr hdc;
         private Graphics graphics;
-        private CancellationTokenSource cancellationTokenSource = new CancellationTokenSource();
+        private IDisposable MouseDisposable;
+        private IDisposable ModeDisposable;
 
         private short bri = 125;
 
@@ -201,17 +122,18 @@ namespace keys
         protected void Form1_FormClosed(object sender, EventArgs e)
         {
             // abort the rx sequence
-            cancellationTokenSource.Cancel();
+            MouseDisposable?.Dispose();
+            ModeDisposable?.Dispose();
             SetBrightness(130);
-            MouseHook.Stop();
+            GlobalHook?.Dispose();
         }
 
         private void Form1_Load(object sender, EventArgs e)
         {
-            MouseHook.Start();
-            var obs = Observable.FromEventPattern(
-                addHandler: h => MouseHook.MouseAction += h,
-                removeHandler: h => MouseHook.MouseAction -= h)
+            GlobalHook = Hook.GlobalEvents();
+            IObservable<EventPattern<MouseEventArgs>> obs = Observable.FromEventPattern<MouseEventHandler, MouseEventArgs>(
+                addHandler: h => GlobalHook.MouseDown += h,
+                removeHandler: h => GlobalHook.MouseDown -= h)
                 .SubscribeOn(Dispatcher.CurrentDispatcher);
 
             short brightness = 0;
@@ -228,7 +150,6 @@ namespace keys
                 .Do(x => SetBrightness(130))
                 .Take(1);
 
-            var token = cancellationTokenSource.Token;
             var mode = ConfigurationManager.AppSettings["mode"] ?? "solid";
 
             IDisposable onsubscribe()
@@ -237,8 +158,7 @@ namespace keys
                 {
                     case "rampup":
                         brightness = 0;
-                        rampUp.Subscribe(token);
-                        return null;
+                        return rampUp.Subscribe();
                     case "solid":
                     default:
                         SetBrightness(0);
@@ -246,15 +166,14 @@ namespace keys
                 }
             }
 
-            // Dispose the old mode observable if one exists. Solid mode has odd behavior if we don't do this.
-            IDisposable sub = null;
-            obs.Subscribe(
+            MouseDisposable = obs.Subscribe(
                 onNext =>
                 {
-                    sub?.Dispose();
+                    // Dispose the old mode observable if one exists. Solid mode has odd behavior if omit this.
+                    ModeDisposable?.Dispose();
                     Console.WriteLine("Left mouse click!");
-                    sub = onsubscribe();
-                }, token);
+                    ModeDisposable = onsubscribe();
+                });
         }
 
         private double GetSetting(string name, double @default)
